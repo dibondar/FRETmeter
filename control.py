@@ -27,13 +27,8 @@ CMD_SET_DIVIDER_PICO_HARP	= 8
 CMD_SET_RANGE_PICO_HARP		= 9
 CMD_SET_TACQ_PICO_HARP		= 10
 	
-CMD_PIEZO_APPLY_VOLTAGE_AX3 	= 11
-
 CMD_OPEN_SHUTTER = 12
 CMD_CLOSE_SHUTTER = 13
-
-CMD_LIGHT_ON	= 14
-CMD_LIGHT_OFF	= 15
 
 CMD_TAKE_PHOTO			= 16
 CMD_TAKE_PHOTO_ACCURATELY	= 17
@@ -139,7 +134,7 @@ def get_scanning_polygon (ScanParameters) :
 		
 ####################################################################################################
 
-def control_pico_harp (input_pico_harp_queue, output_pico_harp_queue, histogram_buffer) :
+def control_pico_harp_ORIGINAL (input_pico_harp_queue, output_pico_harp_queue, histogram_buffer) :
 	"""
 	This function runs as a separate process and controls the Pico Harp 3000.
 	All communications are done through the input and output queues.
@@ -334,6 +329,210 @@ def control_pico_harp (input_pico_harp_queue, output_pico_harp_queue, histogram_
 	# Closing Pico Harp
 	lib.PH_CloseDevice (DEV_INDX)
 		
+def control_pico_harp (input_pico_harp_queue, output_pico_harp_queue, histogram_buffer) :
+	"""
+	!!!!!NOTE: THIS FUNCTION USES HYDRA HARP!!!!!
+	
+	This function runs as a separate process and controls the Pico Harp 3000.
+	All communications are done through the input and output queues.
+	<histogram_buffer> a buffer where the histogram is saved.
+	"""
+	from ctypes import c_int
+
+	lib = ctypes.WinDLL ("C:/Windows/System32/hhlib.dll")
+	
+	# String buffer
+	str_p =  ctypes.create_string_buffer (500)
+
+	# Extract the Pico Harp library version
+	lib.HH_GetLibraryVersion (str_p)
+	pico_harp_lib_version_dev = "2.1"
+	if str_p.value <> pico_harp_lib_version_dev :
+		print "Warning: The current code was developed for PicoHarp Library version %s. The version of the currently installed library is %s" \
+				% (pico_harp_lib_version_dev, str_p.value)
+	
+	# Constants from Phdefin.h
+	MODE_HIST = c_int(0)
+	FLAG_OVERFLOW = 0x0040
+	
+	# Pico harp device ID to be utilized
+	DEV_INDX = c_int(0)
+
+	def check_for_warnings () :
+		"""
+		This function checks for wornings, and if there are any it prints them.
+		"""
+		warnings = ctypes.c_int()
+		if lib.HH_GetWarnings (DEV_INDX, ctypes.byref(warnings)) < 0 :
+			print "\nError: HH_GetWarnings failed\n"; raise RuntimeError
+		elif warnings.value > 0 :
+			# Get the warning mesage
+			if lib.HH_GetWarningsText (DEV_INDX, str_p, warnings) < 0 :
+				print "\nError: HH_GetWarningsText failed\n"; raise RuntimeError
+			print str_p.value
+
+
+	###### Checking for the commands from other processes
+	while True :
+		# Getting the full command with arguments
+		full_command = input_pico_harp_queue.get ()
+
+		# Extracting just the name of the command
+		try : command = full_command[0]
+		except TypeError : command = full_command
+
+		if   command == CMD_EXIT : break # exiting the process
+		elif command == CMD_MEASURE_HISTOGRAM :
+		##### Histogram measurement is requested. <RETURN_SUCCESS> or <RETURN_FAIL> will be retuned 
+		##### and the histogram will be saved in <histogram_buffer> ####
+			try :
+				# Saving the acquisition time, if provided
+				try : Tacq = full_command[1]
+				except TypeError : pass
+
+				if lib.HH_ClearHistMem (DEV_INDX) < 0 : # always use Block 0 if not Routing
+					print "\nError: HH_ClearHistMem failed\n"; raise RuntimeError
+
+				if lib.HH_StartMeas (DEV_INDX, Tacq) < 0 :
+					print "\nError: HH_StartMeas failed\n"; raise RuntimeError
+
+				# Measuring for <Tacq> ms
+				ctcdone = ctypes.c_int(0)
+				while ctcdone.value == 0 : 
+					lib.HH_CTCStatus (DEV_INDX, ctypes.byref(ctcdone))
+
+				if lib.HH_StopMeas (DEV_INDX) < 0 :
+					print "\nError: HH_StopMeas failed\n"; raise RuntimeError
+				
+				# Retrieving the histogram
+				histogram_buffer.acquire()
+				ret = lib.HH_GetHistogram (DEV_INDX, histogram_buffer.get_obj(), c_int(0), c_int(0)) 
+				histogram_buffer.release()
+				if ret < 0 :
+					print "\nError: HH_GetBlock failed\n"; raise RuntimeError
+	
+				flags = ctypes.c_int()
+				if lib.HH_GetFlags (DEV_INDX, ctypes.byref(flags)) < 0 : 
+					print "\nError: HH_GetFlags failed\n"; raise RuntimeError
+				
+				if flags.value & FLAG_OVERFLOW : print "\n\t!!!!!!Overflow!!!!!!!\n"
+
+				# Returning the histogram through the output queue
+				output_pico_harp_queue.put (RETURN_SUCCESS)
+
+			except RuntimeError : output_pico_harp_queue.put (RETURN_FAIL)
+
+		elif command == CMD_INITIATE_PICO_HARP :
+		###### Initialization of Pico Harp is requested. <Resolution> will be returned ######
+		
+			# Extracting the arguments (i.e., settings for the measurement) from the full command
+			ScanParameters 	= full_command[1]
+
+			Offset		= c_int(ScanParameters["Offset"])
+			CFDZeroX0	= c_int(ScanParameters["CFDZeroX0"])
+			CFDLevel0	= c_int(ScanParameters["CFDLevel0"])
+			CFDZeroX1 	= c_int(ScanParameters["CFDZeroX1"])
+			CFDLevel1 	= c_int(ScanParameters["CFDLevel1"])
+			SyncDiv 	= c_int(ScanParameters["SyncDiv"])
+			Range 		= c_int(ScanParameters["Range"])
+			Tacq 		= c_int(ScanParameters["Tacq"])
+			
+			# Closing Pico Harp, just in case if it was already open 
+			lib.HH_CloseDevice (DEV_INDX)
+	
+			try :
+				# Open the first Pico Harp
+				if lib.HH_OpenDevice (DEV_INDX, str_p) < 0 :
+					print "\nError: The first Pico Harp could not be opened\n"; raise RuntimeError
+
+				# Initializing the Pico Harp device with device ID <DEV_INDEX> in the Histogram mode 
+				if lib.HH_Initialize (DEV_INDX, MODE_HIST,0) < 0 :
+					print "\nError: The first Pico Harp device could not be initiated in the Histogram mode\n"; raise RuntimeError
+		
+				if lib.HH_Calibrate (DEV_INDX) < 0 :
+					print "\nError: Pico Harp calibration failed\n"; raise RuntimeError
+		
+				if lib.HH_SetSyncDiv (DEV_INDX, SyncDiv) < 0 :
+					print "\nError: HH_SetSyncDiv failed\n"; raise RuntimeError
+
+				if lib.HH_SetSyncCFD (DEV_INDX, CFDLevel0, CFDZeroX0) < 0 :
+					print "\nError: HH_SetSyncCFD failed\n"; raise RuntimeError
+
+				if lib.HH_SetInputCFD (DEV_INDX, c_int(0), CFDLevel1, CFDZeroX1) < 0 :
+					print "\nError: HH_SetInputCFD (1 channel) failed\n"; raise RuntimeError
+
+				if lib.HH_SetBinning (DEV_INDX, Range) < 0 :
+					print "\nError: HH_SetBinning failed\n"; raise RuntimeError
+
+				if lib.HH_SetOffset (DEV_INDX, Offset) < 0 :
+					print "\nError: HH_SetOffset failed\n"; raise RuntimeError
+
+				if lib.HH_SetStopOverflow (DEV_INDX, c_int(1), c_int(65535)) < 0 :
+					print "\nError: HH_SetStopOverflow failed\n"; raise RuntimeError
+
+				Resolution = ctypes.c_double()
+				if lib.HH_GetResolution (DEV_INDX, ctypes.byref(Resolution)) < 0 :
+					print "\nError: HH_GetResolution failed\n"; raise RuntimeError
+				Resolution = Resolution.value
+					
+				# Note: after Init or SetSyncDiv you must allow 400 ms for valid new count rate readings
+				time.sleep (0.4)
+		
+				Countrate0 = ctypes.c_int()
+				lib.HH_GetSyncRate (DEV_INDX, ctypes.byref(Countrate0))
+				Countrate0 = Countrate0.value
+				
+				Countrate1 = ctypes.c_int()
+				lib.HH_GetCountRate (DEV_INDX, c_int(0), ctypes.byref(Countrate1))
+				Countrate1 = Countrate1.value
+				
+				print "Pico Harp Serial# %s is successfully initialized and ready for measurements" % str_p.value 
+				print "Parameters:\nResolution=%1dps\nInput0 countrate = %1d/s\nInput1 countrate = %1d/s\n" % (Resolution, Countrate0, Countrate1)
+				
+				check_for_warnings ()
+
+				### Initialization of Pico Harp is completed; <Resolution> is returned
+				output_pico_harp_queue.put (Resolution)
+
+			except RuntimeError : output_pico_harp_queue.put (RETURN_FAIL)
+
+		elif command == CMD_GET_COUNT_RATES_PICO_HARP :
+			# Get count rates
+			Countrate0 = ctypes.c_int()
+			lib.HH_GetSyncRate (DEV_INDX, ctypes.byref(Countrate0))
+			Countrate0 = Countrate0.value
+				
+			Countrate1 = ctypes.c_int()
+			lib.HH_GetCountRate (DEV_INDX, c_int(0), ctypes.byref(Countrate1))
+			Countrate1 = Countrate1.value
+				
+			if Countrate0 < 0 or Countrate1 < 0 : 
+				print "Error in getting the Pico Harp count rate\n"
+				output_pico_harp_queue.put (RETURN_FAIL)
+			else : output_pico_harp_queue.put( (Countrate0, Countrate1) )
+
+		elif command == CMD_GET_RESOLUTION_PICO_HARP :
+			# Get time resolution of Pico Harp
+			Resolution = ctypes.c_double()
+			if lib.HH_GetResolution (DEV_INDX, ctypes.byref(Resolution)) < 0 :
+				print "\nError: HH_GetResolution failed\n"
+				output_pico_harp_queue.put (RETURN_FAIL)				
+			else : output_pico_harp_queue.put(Resolution.value)
+
+		# Interactive settings of PicoHarp settings (no returns)
+		elif command == CMD_SET_OFFSET_PICO_HARP	: lib.HH_SetOffset (DEV_INDX, full_command[1])
+		elif command == CMD_SET_CFDZERO_PICO_HARP	: pass #lib.HH_SetCFDZeroCross (DEV_INDX, full_command[1], full_command[2])
+		elif command == CMD_SET_CFDLEVEL_PICO_HARP	: pass #lib.HH_SetCFDLevel (DEV_INDX, full_command[1], full_command[2])
+		elif command == CMD_SET_DIVIDER_PICO_HARP	: lib.HH_SetSyncDiv (DEV_INDX,  full_command[1])
+		elif command == CMD_SET_RANGE_PICO_HARP		: lib.HH_SetBinning (DEV_INDX,  full_command[1])
+		elif command == CMD_SET_TACQ_PICO_HARP		: Tacq = full_command[1]
+		
+		else : 
+			print "PicoHarp process: Unrecognized command"; output_pico_harp_queue.put (RETURN_FAIL) 
+
+	# Closing Pico Harp
+	lib.HH_CloseDevice (DEV_INDX)
+		
 
 ####################################################################################################
 
@@ -408,73 +607,10 @@ def control_camera (input_camera_queue, output_camera_queue, camera_img_buffer) 
 			output_camera_queue.put (RETURN_FAIL)
 
 	camera.release ()
-
-####################################################################################################
-
-def control_aqusition_board (input_aqusition_queue, output_aqusition_queue) : 
-	"""
-	This function runs as a separate process to control piezo moving stages.
-	All communications are done through the queues.  
-	"""
-	
-	# Initialize the channel
-	import nidaqmx 
-	
-	piezo_Ax3 = nidaqmx.AnalogOutputTask ()
-	piezo_Ax3.create_voltage_channel('Dev1/ao1', min_val=0, max_val=5)
-	piezo_Ax3.write (0)
-
-	# channel controlling the LED light for camera
-	LED_light = nidaqmx.DigitalOutputTask ()
-	LED_light.create_channel('Dev1/PFI7')
-	LED_light.write (0)
-	
-	# Main loop. Monitoring input queue
-	while True :
-		# Getting the full command with arguments
-		full_command = input_aqusition_queue.get ()
-
-		# Extracting just the name of the command
-		try : command = full_command[0]
-		except TypeError : command = full_command
-
-		if   command == CMD_EXIT : break # exiting the process
-
-		elif command == CMD_PIEZO_APPLY_VOLTAGE_AX3 :
-			try :
-				# Apply voltage
-				piezo_Ax3.write (5./750 * full_command[1])
-			except RuntimeError : print "\nError: Moving piezo Ax3 failed\n" 
-
-		elif command == CMD_LIGHT_ON :
-			try : 
-				# Turn on the LED light
-				LED_light.write (1)
-				output_aqusition_queue.put (RETURN_SUCCESS)
-			except RuntimeError :
-				print "\nError: LED light could not be turned on\n"; output_aqusition_queue.put (RETURN_FAIL)
-		
-		elif command == CMD_LIGHT_OFF :
-			try : 
-				# Turn off the LED light
-				LED_light.write (0)
-				output_aqusition_queue.put (RETURN_SUCCESS)
-			except RuntimeError :
-				print "\nError: LED light could not be turned off\n"; output_aqusition_queue.put (RETURN_FAIL)
-
-		else : 
-			print "\nAcquisition board error: Unrecognized command\n"; output_aqusition_queue.put (RETURN_FAIL)
-
-
-	LED_light.write (0)
-	LED_light.stop ()
-
-	piezo_Ax3.write (0)
-	piezo_Ax3.stop()
 	
 ####################################################################################################
 
-def moveto (new_position, input_aqusition_queue, output_aqusition_queue, write_serial_port_queue, read_serial_port_queue, \
+def moveto (new_position, write_serial_port_queue, read_serial_port_queue, \
 		unit_size, input_shutter_queue, output_shutter_queue, close_shutter) :
 	"""
 	Move to a <new_position>, specified as a triple of voltages. 
@@ -503,14 +639,11 @@ def moveto (new_position, input_aqusition_queue, output_aqusition_queue, write_s
 		write_serial_port_queue.put( (False, command) )
 		"""
 	
-	# Extracting voltages
-	volt_ax1, volt_ax2, volt_ax3 = new_position
+	# Converting voltages into positions 
+	new_position = tuple( 1e-6*unit_size*p for p in new_position )
 
-	# Position piezo AX3
-	input_aqusition_queue.put ( (CMD_PIEZO_APPLY_VOLTAGE_AX3, volt_ax3) )
-
-	# Moving Ax1 and Ax2
-	write_serial_port_queue.put( (True, "1PA%.6e;2PA%.6e;1WS0;2WS0;2MD?\r"%( 1e-6*unit_size*volt_ax1,  1e-6*unit_size*volt_ax2)  ))
+	# Moving 
+	write_serial_port_queue.put( (True, "1PA%.6e;2PA%.6e;3PA%.6e;1WS0;2WS0;3WS0;2MD?\r"% new_position ) )
 
 	result =  read_serial_port_queue.get()
 	try : 
@@ -541,15 +674,15 @@ class BaseScanning :
 			Constructor
 			"""
 			# Save the all the arguments
-			args_names = ["scaning_event", "pause_scannig_event", "input_pico_harp_queue", "output_pico_harp_queue", "histogram_buffer", 
-					"write_serial_port_queue", "read_serial_port_queue", "input_aqusition_queue", "output_aqusition_queue",
+			args_names = ["scaning_event", "pause_scannig_event", "histogram_buffer", 
+					"write_serial_port_queue", "read_serial_port_queue", 
 					"input_camera_queue", "output_camera_queue", "camera_img_buffer", 
 					"input_shutter_queue", "output_shutter_queue", "ScanParameters", "command"] 
 			for key, value in zip(args_names, args) : setattr(self, key, value)
 			
 			# Arguments for function which controls the moving stages 
-			self.move_to_args = (self.input_aqusition_queue, self.output_aqusition_queue, self.write_serial_port_queue, 
-						self.read_serial_port_queue, self.ScanParameters["unit_size"], self.input_shutter_queue, self.output_shutter_queue)
+			self.move_to_args = (self.write_serial_port_queue, self.read_serial_port_queue, 
+				self.ScanParameters["unit_size"], self.input_shutter_queue, self.output_shutter_queue)
 
 			# Save HDF5 file name
 			self.filename = self.ScanParameters["filename"]
@@ -610,8 +743,6 @@ class BaseScanning :
 			# closing the shutter
 			self.input_shutter_queue.put (CMD_CLOSE_SHUTTER); self.output_shutter_queue.get ()
 			self.scaning_event.clear()
-			# Returning piezo to the origin
-			self.input_aqusition_queue.put( (CMD_PIEZO_APPLY_VOLTAGE_AX3, 0) )
 		
 #####################################################################################################
 #
@@ -925,10 +1056,6 @@ class ScanHistogramsBulk (BaseScanning) :
 
 				# clean
 				del already_scanned
-
-
-		# Just making sure that LED light is off
-		self.input_aqusition_queue.put (CMD_LIGHT_OFF); self.output_aqusition_queue.get ()
 	
 		# Determine the distance between neighboring points
 		min_ax1 = min(voltages, key=operator.itemgetter(0))[0]; max_ax1 = max(voltages, key=operator.itemgetter(0))[0] 
@@ -1086,9 +1213,6 @@ class ScanHistogramBoundary (BaseScanning) :
 		
 		# Close the parameter grope
 		del parameters_grp
-
-		# Just making sure that LED light is off
-		self.input_aqusition_queue.put (CMD_LIGHT_OFF); self.output_aqusition_queue.get ()
 
 		try : del self.file_scan["histograms"]
 		except KeyError : pass
@@ -1336,9 +1460,6 @@ class ScanHistogramsAdaptively (BaseScanning) :
 		
 		# Close the parameter grope
 		del parameters_grp
-
-		# Just making sure that LED light is off
-		self.input_aqusition_queue.put (CMD_LIGHT_OFF); self.output_aqusition_queue.get ()
 
 		try : del self.file_scan["histograms"]
 		except KeyError : pass
@@ -1610,7 +1731,7 @@ def control_moving_stage (write_serial_port_queue, read_serial_port_queue) :
 	import serial
 	
 	# Opening serial port to talk to NewPort moving stage
-	serial_port = serial.Serial (port='COM4', baudrate=19200,  bytesize=8, parity=serial.PARITY_NONE, stopbits=1, timeout=0.5)
+	serial_port = serial.Serial (port='COM5', baudrate=19200,  bytesize=8, parity=serial.PARITY_NONE, stopbits=1, timeout=0.5)
 	
 	while True :
 		full_command = write_serial_port_queue.get ()
@@ -1720,14 +1841,6 @@ class CMicroscopeConrol (wx.Frame) :
 								args=(self.input_pico_harp_queue, self.output_pico_harp_queue, self.histogram_buffer))
 		self.control_pico_harp.start ()
 
-		# Creating process controlling piezo
-		self.input_aqusition_queue	 = multiprocessing.Queue ()
-		self.output_aqusition_queue	= multiprocessing.Queue ()
-
-		self.control_aqusition_board =  multiprocessing.Process (target=control_aqusition_board, \
-								args=(self.input_aqusition_queue, self.output_aqusition_queue))
-		self.control_aqusition_board.start ()
-
 		# Creating process controlling shutter
 		self.input_shutter_queue 	= multiprocessing.Queue ()
 		self.output_shutter_queue	= multiprocessing.Queue ()
@@ -1780,12 +1893,6 @@ class CMicroscopeConrol (wx.Frame) :
 		self.control_pico_harp.join()
 		self.input_pico_harp_queue.close ()
 		self.output_pico_harp_queue.close ()
-
-		# Closing piezo control
-		self.input_aqusition_queue.put (CMD_EXIT)
-		self.control_aqusition_board.join()
-		self.input_aqusition_queue.close ()
-		self.output_aqusition_queue.close ()
 	
 	def ConstructGUI (self) :
 		"""
@@ -2076,14 +2183,6 @@ class CMicroscopeConrol (wx.Frame) :
 		self.Bind (wx.EVT_BUTTON, self.measure_single_histogram, id=self.measure_single_histogram_button.GetId())
 		boxsizer.Add(self.measure_single_histogram_button, flag=wx.EXPAND, border=5)
 		
-		# Button to control camera light 
-		self.__turn_light_on_label__  = "Turn on light"
-		self.__turn_light_off_label__ = "Turn OFF light"
-
-		self.light_button = wx.Button (panel, label=self.__turn_light_on_label__) 
-		self.Bind (wx.EVT_BUTTON, self.use_light, self.light_button)
-		boxsizer.Add (self.light_button, flag=wx.EXPAND, border=5)
-		
 		# Button for opening the Thorlabs camera
 		self.__start_camera_label__ = "Start Thorlabs camera"
 		self.__stop_camera_label__ = "STOP Thorlabs camera"
@@ -2132,7 +2231,7 @@ class CMicroscopeConrol (wx.Frame) :
 		boxsizer.Add (self.go_to_position_ax2, flag=wx.EXPAND, border=5)
 
 		boxsizer.Add (wx.StaticText(panel, label="position Ax3 (V)"), flag=wx.LEFT, border=5)
-		self.go_to_position_ax3 = wx.SpinCtrl (panel, value="0", min=0, max=750)
+		self.go_to_position_ax3 = wx.SpinCtrl (panel, value="0", min=-1e4, max=1e4)
 		boxsizer.Add (self.go_to_position_ax3, flag=wx.EXPAND, border=5)
 
 		# Button to start motion
@@ -2244,7 +2343,6 @@ class CMicroscopeConrol (wx.Frame) :
 				args=(self.scannig_event, self.pause_scannig_event, \
 					self.input_pico_harp_queue,  self.output_pico_harp_queue, self.histogram_buffer, \
 					self.write_serial_port_queue, self.read_serial_port_queue, 
-					self.input_aqusition_queue, self.output_aqusition_queue, \
 					self.input_camera_queue, self.output_camera_queue, self.camera_img_buffer, 
 					self.input_shutter_queue, self.output_shutter_queue, ScanParameters, button.command) )
 			
@@ -2345,31 +2443,11 @@ class CMicroscopeConrol (wx.Frame) :
 		"""
 		if self.use_joystick_button.GetLabel() == self.__use_joystick_stop_label__ : self.use_joystick ()
 		if self.use_ccd_camera_button.GetLabel () == self.__stop_camera_label__ : self.use_ccd_camera ()
-		if self.light_button.GetLabel() == self.__turn_light_off_label__ : self.use_light ()
 		if self.measure_single_histogram_button.GetLabel() == self.__stop_measuring_single_histogram_label__ : self.measure_single_histogram()
 
 		for button in [self.bleaching_study_button, self.scanning_button, self.boundary_scanning_button, \
 				self.adaptive_scanning_button, self.test_scanning_geometry_button, self.scanning_video_button] :
 			if button.GetLabel() in [button.__stop_label__, button.__pause_label__] : self.do_scanning (button)
-
-	def use_light (self, event=None) :
-		"""
-		<self.light_button> was clicked
-		"""
-		if self.light_button.GetLabel() == self.__turn_light_on_label__ :
-			# Turn on the camera light
-			self.input_aqusition_queue.put (CMD_LIGHT_ON)
-			if self.output_aqusition_queue.get() == RETURN_FAIL : return
-			self.light_button.SetLabel (self.__turn_light_off_label__)
-
-		elif self.light_button.GetLabel() == self.__turn_light_off_label__ :
-			# Turn off the light
-			self.input_aqusition_queue.put (CMD_LIGHT_OFF)
-			if self.output_aqusition_queue.get() == RETURN_FAIL : return
-			self.light_button.SetLabel (self.__turn_light_on_label__)
-
-		else : raise ValueError ("Unrecognized button label")
-		
 
 	def use_ccd_camera (self, event=None) :
 		"""
@@ -2378,9 +2456,6 @@ class CMicroscopeConrol (wx.Frame) :
 		if self.use_ccd_camera_button.GetLabel () == self.__start_camera_label__ :
 		# Start using the camera
 			self.StopAllJobs ()
-			
-			# Turn on LED
-			self.use_light()
 
 			# Start time to capture image
 			TIMER_ID = wx.NewId()
@@ -2415,8 +2490,6 @@ class CMicroscopeConrol (wx.Frame) :
 
 		elif self.use_ccd_camera_button.GetLabel () == self.__stop_camera_label__ :
 		# Stop using the camera
-			# Turn off LED
-			self.use_light()
 		
 			self.camera_timer.Stop ()
 			del self.camera_timer
@@ -2519,25 +2592,26 @@ class CMicroscopeConrol (wx.Frame) :
 		"""
 		<self.get_current_location_button> was clicked
 		"""
-		# Moving piezo
-		self.input_aqusition_queue.put ( (CMD_PIEZO_APPLY_VOLTAGE_AX3, 0) )
-
 		# Save the current position New Port
 		self.write_serial_port_queue.put( (True, "1WS0;1TP\r") )
 		position_ax1 = float(self.read_serial_port_queue.get())
 		
 		self.write_serial_port_queue.put( (True, "2WS0;2TP\r") )
 		position_ax2 = float(self.read_serial_port_queue.get())
+		
+		self.write_serial_port_queue.put( (True, "3WS0;3TP\r") )
+		position_ax3 = float(self.read_serial_port_queue.get())
 
 		# Converting mm to units
 		unit_size = self.unit_size.GetValue()
 		volt_ax1 = int(round( 1.e6*position_ax1 / unit_size ))
 		volt_ax2 = int(round( 1.e6*position_ax2 / unit_size ))
+		volt_ax3 = int(round( 1.e6*position_ax3 / unit_size ))
 
 		# Setting the values
 		self.go_to_position_ax1.SetValue(volt_ax1)
 		self.go_to_position_ax2.SetValue(volt_ax2)
-		self.go_to_position_ax3.SetValue(0)
+		self.go_to_position_ax3.SetValue(volt_ax3)
 
 	def go_to_points_ABCDE (self, event) :
 		"""
@@ -2558,26 +2632,19 @@ class CMicroscopeConrol (wx.Frame) :
 		# Moving to chosen point
 		self.write_serial_port_queue.put( (False, "1PA%.9e\r" % ax1) )
 		self.write_serial_port_queue.put( (False, "2PA%.9e\r" % ax2) )
-		
-		# Reset the piezo
-		self.input_aqusition_queue.put ( (CMD_PIEZO_APPLY_VOLTAGE_AX3, 0) )
 
 	def go_to (self, event) :
 		"""
 		<self.go_to_button> was clicked
 		"""
 		new_position = ( self.go_to_position_ax1.GetValue(), self.go_to_position_ax2.GetValue(), self.go_to_position_ax3.GetValue() )
-		moveto (new_position, self.input_aqusition_queue, self.output_aqusition_queue,\
-				self.write_serial_port_queue, self.read_serial_port_queue, self.unit_size.GetValue(), 
+		moveto (new_position, self.write_serial_port_queue, self.read_serial_port_queue, self.unit_size.GetValue(), 
 				self.input_shutter_queue, self.output_shutter_queue, False)
 
 	def add_point (self, event) :
 		"""
 		<self.add_point_button> was clicked to characterize the scanning geometry.
 		"""
-		# Moving piezo 
-		self.input_aqusition_queue.put( (CMD_PIEZO_APPLY_VOLTAGE_AX3, 0) )
-
 		# Saving the current position of the New Port moving stage
 		self.write_serial_port_queue.put( (True, "1TP\r") ); ax1 = float(self.read_serial_port_queue.get())
 		self.write_serial_port_queue.put( (True, "2TP\r") ); ax2 = float(self.read_serial_port_queue.get())
