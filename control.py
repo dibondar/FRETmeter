@@ -542,28 +542,66 @@ def control_camera (input_camera_queue, output_camera_queue, camera_img_buffer) 
 	All communications are done through queues.
 	<camera_img_buffer> buffer where the image is stored.
 	"""
-	# Initialize the camera
-	import cv2
-	camera = cv2.VideoCapture(0)
-	camera.set(3, CAMERA_IMG_WIDTH); camera.set(4, CAMERA_IMG_HIGHT)
-
 	# Create a numpy proxy for <camera_img_buffer>
 	camera_img_buffer.acquire ()
 	img_buffer = camera_img_shape (camera_img_buffer)
 	camera_img_buffer.release ()
+	
+	################## Initialize the camera ###################
+	import ctypes.wintypes
+	
+	# some constants
+	IS_SUCCESS = 0
+	
+	# Load driver
+	lib = ctypes.cdll.LoadLibrary("uc480")
+	
+	num_cams = ctypes.c_int()
+	if lib.is_GetNumberOfCameras( ctypes.byref(num_cams) ) != IS_SUCCESS :
+		raise RuntimeError("Error in is_GetNumberOfCameras")
+
+	if num_cams.value > 1 :
+		print "More than one camera is detect. The first one will be used."
+	
+	# Camera handle
+	ph_cam = ctypes.wintypes.HDC(0)
+
+	# Window handle
+	h_wnd = ctypes.wintypes.HWND(0)
+
+	# Initialize camera
+	if lib.is_InitCamera( ctypes.byref(ph_cam), h_wnd ) != IS_SUCCESS :
+		raise RuntimeError("Error in is_InitCamera")
+	
+	# ID of the memory for image storage
+	pid = ctypes.c_int()
+	# pointer to buffer
+	pc_img_mem = img_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_char))
+
+	if lib.is_SetAllocatedImageMem (ph_cam,  CAMERA_IMG_WIDTH, CAMERA_IMG_HIGHT, 
+		8*img_buffer.dtype.itemsize, pc_img_mem, ctypes.byref(pid) 
+	) != IS_SUCCESS :
+		raise RuntimeError("Error in is_SetAllocatedImageMem")
+
+	# Set colour
+	IS_CM_MONO8 = 6
+	if lib.is_SetColorMode (ph_cam,  IS_CM_MONO8) != IS_SUCCESS :
+		raise RuntimeError("Error in is_SetColorMode")
+		
+	# Set active memory
+	if lib.is_SetImageMem(ph_cam, pc_img_mem, pid) != IS_SUCCESS :
+		raise RuntimeError("Error in is_SetImageMem")	
+		
+	##################  Camera initiated ###################
 
 	# Draw circule of 10 micorns radius 
 	sqr = (np.arange(img_buffer.shape[0])[:,np.newaxis] - img_buffer.shape[0]/2.)**2 \
 			+ (np.arange(img_buffer.shape[1])[np.newaxis,:] - img_buffer.shape[1]/2.)**2
-	radius = 8.*img_buffer.shape[0]/190.
+	radius = 8.*img_buffer.shape[0]/190. # Adjust as needed
 	circular_cut = np.nonzero( ( (radius-1)**2 < sqr)&(sqr < (radius+1)**2 )  )
 	del sqr, radius
 
-	def copy_img_to_buffer (image) :
-		# Copying the picture to buffer
-		camera_img_buffer.acquire ()
-		np.mean(image, axis=2, dtype=np.uint8, out=img_buffer) # Minimizing image size by averaging channels 
-		camera_img_buffer.release ()
+	def PostProcessImg () :
 		# Drawing the "gun" sight
 		img_buffer[img_buffer.shape[0]/2, :] = 0
 		img_buffer[:, img_buffer.shape[1]/2] = 0
@@ -572,7 +610,7 @@ def control_camera (input_camera_queue, output_camera_queue, camera_img_buffer) 
 
 	# record time when last photo was taken
 	previous_photo_taken_time = time.clock()
-
+	
 	# Main loop: Monitoring input queue
 	while True :
 		command = input_camera_queue.get ()
@@ -582,11 +620,12 @@ def control_camera (input_camera_queue, output_camera_queue, camera_img_buffer) 
 			# Taking picture if it not already in the buffer
 			if time.clock() - previous_photo_taken_time > 0.05:
 				# The photo in the buffer is more than 50ms old, take new one
-				flag, image = camera.read ()
-				if not flag :
-					print "\nCamera error: Picture could not be taken\n"
+				camera_img_buffer.acquire ()
+				if lib.is_FreezeVideo(ph_cam, 0x0001) != IS_SUCCESS :
 					output_camera_queue.put (RETURN_FAIL)
-				copy_img_to_buffer (image)
+					print("Error in is_FreezeVideo")
+				PostProcessImg()
+				camera_img_buffer.release ()
 				previous_photo_taken_time = time.clock()
 				output_camera_queue.put (RETURN_SUCCESS)
 			else : # no need to take new picture
@@ -594,19 +633,21 @@ def control_camera (input_camera_queue, output_camera_queue, camera_img_buffer) 
 
 		elif command == CMD_TAKE_PHOTO_ACCURATELY :
 			# Taking picture 
-			camera.read () # (for accuracy) this line makes sure that we get the image in real time
-			flag, image = camera.read ()
-			if not flag :
-				print "\nCamera error: Picture could not be taken\n"
+			camera_img_buffer.acquire ()
+			if lib.is_FreezeVideo(ph_cam, 0x0001) != IS_SUCCESS :
 				output_camera_queue.put (RETURN_FAIL)
-			copy_img_to_buffer (image)
+				print("Error in is_FreezeVideo")
+			PostProcessImg()
+			camera_img_buffer.release ()	
 			previous_photo_taken_time = time.clock()
 			output_camera_queue.put (RETURN_SUCCESS)
 		else : 
-			print "Camera error: Unrecognized request"
+			print "Camera error: Unrecognised request"
 			output_camera_queue.put (RETURN_FAIL)
 
-	camera.release ()
+	################### Close camera ##################
+	if lib.is_ExitCamera(ph_cam) != IS_SUCCESS :
+		raise RuntimeError("Error in is_ExitCamera")
 	
 ####################################################################################################
 
@@ -2029,19 +2070,13 @@ class CMicroscopeConrol (wx.Frame) :
 		boxsizer.Add (self.number_steps_ax3, flag=wx.EXPAND, border=5)
 		
 		# Voltage characteristics of piezo
-		boxsizer.Add (wx.StaticText(panel, label="\nMin piezo voltage Ax3 (V)"), flag=wx.LEFT, border=5)
-		self.piezo_min_volt_ax3 = wx.SpinCtrl (panel, value="0", min=0, max=750)
+		boxsizer.Add (wx.StaticText(panel, label="\nMin Ax3 (units)"), flag=wx.LEFT, border=5)
+		self.piezo_min_volt_ax3 = wx.SpinCtrl (panel, value="0", min=-1e6, max=1e6)
 		boxsizer.Add (self.piezo_min_volt_ax3, flag=wx.EXPAND, border=5)
 		
-		boxsizer.Add (wx.StaticText(panel, label="Max piezo voltage Ax3 (V)"), flag=wx.LEFT, border=5)
-		self.piezo_max_volt_ax3 = wx.SpinCtrl (panel, value="100", min=0, max=750)
+		boxsizer.Add (wx.StaticText(panel, label="Max Ax3 (units)"), flag=wx.LEFT, border=5)
+		self.piezo_max_volt_ax3 = wx.SpinCtrl (panel, value="100", min=-1e6, max=1e6)
 		boxsizer.Add (self.piezo_max_volt_ax3, flag=wx.EXPAND, border=5)
-
-		# Calibration characteristics of piezo
-		boxsizer.Add (wx.StaticText(panel, label="piezo Ax3 displacement (nm/V)"), flag=wx.LEFT, border=5)
-		self.piezo_calibrated_displacement_ax3 = wx.SpinCtrl (panel, value="150", min=0, max=750)
-		boxsizer.Add (self.piezo_calibrated_displacement_ax3, flag=wx.EXPAND, border=5)
-		self.piezo_calibrated_displacement_ax3.Disable()
 
 		# Unit of distance used for moving stages
 		boxsizer.Add (wx.StaticText(panel, label="Unit size in nm"), flag=wx.LEFT, border=5)
@@ -2411,10 +2446,11 @@ class CMicroscopeConrol (wx.Frame) :
 		# Display actual scanning geometry
 		mm_per_V_ax1 = 1e-6*ScanParameters["unit_size"] 
 		mm_per_V_ax2 = mm_per_V_ax1
+		mm_per_V_ax3 = mm_per_V_ax1
 		
 		micron_per_V_ax1 = mm_per_V_ax1*1000 
 		micron_per_V_ax2 = mm_per_V_ax2*1000
-		micron_per_V_ax3 = ScanParameters["piezo_calibrated_displacement_ax3"]*1e-3
+		micron_per_V_ax3 = mm_per_V_ax3*1000
 
 		points = visvis.Pointset(3)
 		for ax1, ax2, ax3 in voltages : 
@@ -2688,7 +2724,6 @@ class CMicroscopeConrol (wx.Frame) :
 			"points"		: self.points,
 			"piezo_min_volt_ax3"	: self.piezo_min_volt_ax3.GetValue(),
 			"piezo_max_volt_ax3"	: self.piezo_max_volt_ax3.GetValue(),
-			"piezo_calibrated_displacement_ax3"	: self.piezo_calibrated_displacement_ax3.GetValue(),
 			"histogram_counts_threshold"		: self.histogram_counts_threshold.GetValue(),
 			"requested_histogram_counts"		: self.requested_histogram_counts.GetValue(),
 			"revisit_number" 			: self.revisit_number.GetValue(),
@@ -2750,7 +2785,6 @@ class CMicroscopeConrol (wx.Frame) :
 			elif "photo_" in key		: setattr(self, key, data[...]) # Loading photos that correspond to <self.points>
 			elif key == "piezo_min_volt_ax3" : self.piezo_min_volt_ax3.SetValue(data[...])
 			elif key == "piezo_max_volt_ax3" : self.piezo_max_volt_ax3.SetValue(data[...])
-			elif key == "piezo_calibrated_displacement_ax3" : self.piezo_calibrated_displacement_ax3.SetValue(data[...])
 			elif key == "unit_size" : 	self.unit_size.SetValue (data[...])
 			# Pico Harp settings
 			elif key == "Offset"		: self.PicoHarp_Offset.SetValue(data[...])
