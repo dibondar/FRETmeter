@@ -551,7 +551,8 @@ def control_camera (input_camera_queue, output_camera_queue, camera_img_buffer) 
 	import ctypes.wintypes
 	
 	# some constants
-	IS_SUCCESS = 0
+	IS_SUCCESS 			= 0
+	IS_CAPTURE_RUNNING 	= 140
 	
 	# Load driver
 	lib = ctypes.cdll.LoadLibrary("uc480")
@@ -601,12 +602,26 @@ def control_camera (input_camera_queue, output_camera_queue, camera_img_buffer) 
 	circular_cut = np.nonzero( ( (radius-1)**2 < sqr)&(sqr < (radius+1)**2 )  )
 	del sqr, radius
 
-	def PostProcessImg () :
-		# Drawing the "gun" sight
-		img_buffer[img_buffer.shape[0]/2, :] = 0
-		img_buffer[:, img_buffer.shape[1]/2] = 0
-		# Drawing the circule of 10 micron radius
-		img_buffer[ circular_cut ] = 0
+	def AquireImg () :
+		"""
+		Acquire image
+		"""
+		camera_img_buffer.acquire ()
+		
+		if lib.is_FreezeVideo(ph_cam, 0x0001) in [IS_SUCCESS, IS_CAPTURE_RUNNING] :
+			# Drawing the "gun" sight
+			img_buffer[img_buffer.shape[0]/2, :] = 0
+			img_buffer[:, img_buffer.shape[1]/2] = 0
+			# Drawing the circule of 10 micron radius
+			img_buffer[ circular_cut ] = 0	
+			
+			result = RETURN_SUCCESS
+		else :
+			result = RETURN_FAIL
+			print("Error in is_FreezeVideo")
+			
+		camera_img_buffer.release ()
+		return result
 
 	# record time when last photo was taken
 	previous_photo_taken_time = time.clock()
@@ -620,27 +635,15 @@ def control_camera (input_camera_queue, output_camera_queue, camera_img_buffer) 
 			# Taking picture if it not already in the buffer
 			if time.clock() - previous_photo_taken_time > 0.05:
 				# The photo in the buffer is more than 50ms old, take new one
-				camera_img_buffer.acquire ()
-				if lib.is_FreezeVideo(ph_cam, 0x0001) != IS_SUCCESS :
-					output_camera_queue.put (RETURN_FAIL)
-					print("Error in is_FreezeVideo")
-				PostProcessImg()
-				camera_img_buffer.release ()
+				output_camera_queue.put ( AquireImg() )
 				previous_photo_taken_time = time.clock()
-				output_camera_queue.put (RETURN_SUCCESS)
 			else : # no need to take new picture
 				output_camera_queue.put (RETURN_SUCCESS)
 
 		elif command == CMD_TAKE_PHOTO_ACCURATELY :
 			# Taking picture 
-			camera_img_buffer.acquire ()
-			if lib.is_FreezeVideo(ph_cam, 0x0001) != IS_SUCCESS :
-				output_camera_queue.put (RETURN_FAIL)
-				print("Error in is_FreezeVideo")
-			PostProcessImg()
-			camera_img_buffer.release ()	
+			output_camera_queue.put ( AquireImg() )
 			previous_photo_taken_time = time.clock()
-			output_camera_queue.put (RETURN_SUCCESS)
 		else : 
 			print "Camera error: Unrecognised request"
 			output_camera_queue.put (RETURN_FAIL)
@@ -715,7 +718,8 @@ class BaseScanning :
 			Constructor
 			"""
 			# Save the all the arguments
-			args_names = ["scaning_event", "pause_scannig_event", "histogram_buffer", 
+			args_names = ["scaning_event", "pause_scannig_event", 
+					"input_pico_harp_queue", "output_pico_harp_queue", "histogram_buffer", 
 					"write_serial_port_queue", "read_serial_port_queue", 
 					"input_camera_queue", "output_camera_queue", "camera_img_buffer", 
 					"input_shutter_queue", "output_shutter_queue", "ScanParameters", "command"] 
@@ -724,7 +728,7 @@ class BaseScanning :
 			# Arguments for function which controls the moving stages 
 			self.move_to_args = (self.write_serial_port_queue, self.read_serial_port_queue, 
 				self.ScanParameters["unit_size"], self.input_shutter_queue, self.output_shutter_queue)
-
+				
 			# Save HDF5 file name
 			self.filename = self.ScanParameters["filename"]
 						
@@ -2265,7 +2269,7 @@ class CMicroscopeConrol (wx.Frame) :
 		self.go_to_position_ax2 = wx.SpinCtrl (panel, value="0", min=-1e4, max=1e4)
 		boxsizer.Add (self.go_to_position_ax2, flag=wx.EXPAND, border=5)
 
-		boxsizer.Add (wx.StaticText(panel, label="position Ax3 (V)"), flag=wx.LEFT, border=5)
+		boxsizer.Add (wx.StaticText(panel, label="position Ax3 (unit)"), flag=wx.LEFT, border=5)
 		self.go_to_position_ax3 = wx.SpinCtrl (panel, value="0", min=-1e4, max=1e4)
 		boxsizer.Add (self.go_to_position_ax3, flag=wx.EXPAND, border=5)
 

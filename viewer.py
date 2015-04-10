@@ -273,8 +273,7 @@ def load_response_function (Resolution, path="") :
 	Load response function that corresponds to histograms with <Resolution>. 
 	<path> list of directories, where search the file should be searched for.
 	"""	
-	if Resolution in [16, 32, 64] : filename = "response_function_%dps.dat" % Resolution  
-	else : raise ValueError ("Response function for resolution %d ps does not exist" % Resolution)
+	filename = "response_function_%dps.dat" % Resolution  
 	
 	# Trying to load the file from the list of paths
 	if isinstance(path, basestring) : path = [path]
@@ -292,9 +291,10 @@ def load_response_function (Resolution, path="") :
 
 		# Check whether user canceled
 		if openFileDialog.ShowModal() == wx.ID_CANCEL : 
-				raise ValueError ("User did not chose file containing the response function")
-
-		response_function = np.fromfile (openFileDialog.GetPath())
+				#print ("User did not chose file containing the response function")
+				response_function = None
+		else :
+			response_function = np.fromfile (openFileDialog.GetPath())
 
 	return response_function
 	
@@ -424,13 +424,16 @@ class CViewer (wx.Frame) :
 		# Read some parameters
 		try :
 			# This is for backward compatibilities
-			self.piezo_calibrated_displacement_ax1 = int(self.parameters_group["piezo_calibrated_displacement_ax1"][...])
-			self.piezo_calibrated_displacement_ax2 = int(self.parameters_group["piezo_calibrated_displacement_ax2"][...])
+			#self.piezo_calibrated_displacement_ax1 = int(self.parameters_group["piezo_calibrated_displacement_ax1"][...])
+			#self.piezo_calibrated_displacement_ax2 = int(self.parameters_group["piezo_calibrated_displacement_ax2"][...])
+			#self.piezo_calibrated_displacement_ax3 = int(self.parameters_group["piezo_calibrated_displacement_ax3"][...])
+			self.piezo_calibrated_displacement_ax1 = int(self.parameters_group["unit_size"][...])
+			self.piezo_calibrated_displacement_ax2 = self.piezo_calibrated_displacement_ax1
 			self.piezo_calibrated_displacement_ax3 = int(self.parameters_group["piezo_calibrated_displacement_ax3"][...])
 		except KeyError : 
 			self.piezo_calibrated_displacement_ax1 = int(self.parameters_group["unit_size"][...])
 			self.piezo_calibrated_displacement_ax2 = self.piezo_calibrated_displacement_ax1
-			self.piezo_calibrated_displacement_ax3 = int(self.parameters_group["piezo_calibrated_displacement_ax3"][...])
+			self.piezo_calibrated_displacement_ax3 = self.piezo_calibrated_displacement_ax1
 
 		try :
 			# If the HDF5 file contains predicated the rate of fluorescence, 
@@ -454,6 +457,7 @@ class CViewer (wx.Frame) :
 		# Convert voltages to microns
 		self.x_micron = 1.e-3 * self.piezo_calibrated_displacement_ax1 * self.voltages[:,0]
 		self.y_micron = 1.e-3 * self.piezo_calibrated_displacement_ax2 * self.voltages[:,1]
+		self.z_micron = 1.e-3 * self.piezo_calibrated_displacement_ax3 * self.voltages[:,2]
 		
 		# Create GUI
 		if title == None : 
@@ -648,6 +652,14 @@ class CViewer (wx.Frame) :
 		self.Bind (wx.EVT_CHECKBOX, self.show_histogram, self.to_process_histogram)
 		boxsizer.Add(self.to_process_histogram,  flag=wx.LEFT, border=5)
 
+		# Disable exp fitting controls if response function has not been loaded 
+		if self.response_function is None :
+			self.number_fitting_exponent.SetValue(0)
+			self.number_fitting_exponent.Disable()
+			
+			self.to_process_histogram.SetValue(False)
+			self.to_process_histogram.Disable()
+			
 		self.to_use_logplot = wx.CheckBox (panel, label="Use log plot for histogram")
 		self.to_use_logplot.SetValue(True)
 		self.Bind (wx.EVT_CHECKBOX, self.show_histogram, self.to_use_logplot)
@@ -1017,13 +1029,14 @@ class CViewer (wx.Frame) :
 		# Show relative values of the coordinates
 		X = self.x_micron - self.x_micron.min()
 		Y = self.y_micron - self.y_micron.min()
+		Z = self.z_micron - self.z_micron.min()
 		
-		sc = axes.scatter (X, Y, self.voltages[:,2], c=self.fluoresence_rate, cmap=cm.jet, picker=2, linewidths=0)		
+		sc = axes.scatter (X, Y, Z, c=self.fluoresence_rate, cmap=cm.jet, picker=2, linewidths=0)		
 		self.fluoresence_rate_fig.colorbar (sc, use_gridspec=True, orientation='horizontal')
 
 		axes.set_xlabel ('ax1 (micron)')
 		axes.set_ylabel ('ax2 (micron)')
-		axes.set_zlabel ('ax3 (voltages)')
+		axes.set_zlabel ('ax3 (micron)')
 		axes.set_title ("fluorescence rate (counts per millisecond)")
 
 		self.fluoresence_rate_canvas.draw()			
@@ -1192,9 +1205,15 @@ class CViewer (wx.Frame) :
 		get_fitted_data			= operator.itemgetter("fitted_data")
 		
 		# Unrolling image
-		extracted_voltages, extracted_fluoresence_rate, extracted_fitted_data \
-			= zip( *( (key, get_fluoresence_rate(value), get_fitted_data(value)) for key,value in fitted_data["points"].iteritems()) )
-		
+		try :
+			extracted_voltages, extracted_fluoresence_rate, extracted_fitted_data \
+				= zip( *( (key, get_fluoresence_rate(value), get_fitted_data(value)) for key,value in fitted_data["points"].iteritems()) )
+		except KeyError :
+			# No fitted data found, just load voltages and fluorescence rate
+			extracted_voltages, extracted_fluoresence_rate \
+				= zip( *( (key, get_fluoresence_rate(value)) for key,value in fitted_data["points"].iteritems()) )
+			extracted_fitted_data = None
+				
 		self.initialize(extracted_voltages, extracted_fluoresence_rate, extracted_fitted_data)
 		
 	def initialize (self, new_voltages, new_fluoresence_rate, new_fitted_data) :
@@ -1205,25 +1224,28 @@ class CViewer (wx.Frame) :
 		# Converting list to arrays
 		self.voltages 			= np.array(new_voltages) 
 		self.fluoresence_rate = np.array(new_fluoresence_rate) 
-		new_fitted_data 			= np.array(new_fitted_data)
 		
 		# Convert voltages to microns
 		self.x_micron = 1.e-3 * self.piezo_calibrated_displacement_ax1 * self.voltages[:,0]
 		self.y_micron = 1.e-3 * self.piezo_calibrated_displacement_ax2 * self.voltages[:,1]
+		self.z_micron = 1.e-3 * self.piezo_calibrated_displacement_ax3 * self.voltages[:,2]
 		
-		########## Converting array <new_fitted_data> to <self.processed_scans> ##################
-		try : del self.processed_scans_buffer, self.processed_scans
-		except AttributeError : pass
+		if new_fitted_data is not None :
+			new_fitted_data 			= np.array(new_fitted_data)
+		
+			########## Converting array <new_fitted_data> to <self.processed_scans> ##################
+			try : del self.processed_scans_buffer, self.processed_scans
+			except AttributeError : pass
 
-		# Allocating memory 
-		self.processed_scans_buffer = multiprocessing.Array (ctypes.c_double, new_fitted_data.size)
+			# Allocating memory 
+			self.processed_scans_buffer = multiprocessing.Array (ctypes.c_double, new_fitted_data.size)
 
-		# Creating numpy wrapper over the buffer
-		self.processed_scans_buffer.acquire()
-		self.processed_scans = np.frombuffer (self.processed_scans_buffer.get_obj())
-		self.processed_scans = self.processed_scans.reshape( new_fitted_data.shape  )
-		np.copyto (self.processed_scans, new_fitted_data)
-		self.processed_scans_buffer.release()
+			# Creating numpy wrapper over the buffer
+			self.processed_scans_buffer.acquire()
+			self.processed_scans = np.frombuffer (self.processed_scans_buffer.get_obj())
+			self.processed_scans = self.processed_scans.reshape( new_fitted_data.shape  )
+			np.copyto (self.processed_scans, new_fitted_data)
+			self.processed_scans_buffer.release()
 		
 		######### Re-plot with updated data  
 		try : wx.CallAfter(self.display_post_processing_data, self.__previously_clicked_button__)
