@@ -13,11 +13,11 @@ get_fluoresence_rate 	= operator.itemgetter("fluoresence_rate")
 get_fitted_data			= operator.itemgetter("fitted_data")
 	
 # Files containing information about working sensor 
-vinculinTS_filenames = glob.glob("Data_Final_Plots\\vinculinTS\\vinculinTS_*_direct_sum_boundary.flim")
+vinculinTS_filenames = glob.glob("..\\Data_Final_Plots\\confocal_microscope\\vinculinTS\\vinculinTS_*_boundary.flim")
 # Files for tailless control
-TL_filenames = glob.glob("Data_Final_Plots\\TL\\TL_*_direct_sum_boundary.flim")
+TL_filenames = glob.glob("..\\Data_Final_Plots\\confocal_microscope\\TL\\TL_*_boundary.flim")
 # Samples with no constructions
-blank_eggs_filenames = glob.glob("Data_Final_Plots\\blank\\blank_*_direct_sum_boundary.flim")
+#blank_eggs_filenames = glob.glob("Data_Final_Plots\\blank\\blank_*_direct_sum_boundary.flim")
 
 
 def stat_from_flim_file (filename) :
@@ -69,7 +69,7 @@ def plot_cumulative_stat () :
 
 	plt.show()
 		
-def sliced_sample (filename, nchunks = 15) :
+def sliced_sample (filename, nchunks = 7) :
 	"""
 	Slice a sample saved in file <filename> into <nchunks> chunks. 
 	"""
@@ -134,8 +134,8 @@ def plot_cumulative_sliced_samples () :
 			= zip(*reduce( operator.add, pool.map(sliced_sample, TL_filenames) ))
 	vinculinTS_mean_fluoresence_rate, vinculinTS_mean_time_life \
 			= zip(*reduce( operator.add, pool.map(sliced_sample, vinculinTS_filenames) ))
-	blank_egg_mean_fluoresence_rate, blank_egg_mean_time_life \
-			= zip(*reduce( operator.add, pool.map(sliced_sample, blank_eggs_filenames) ))
+	#blank_egg_mean_fluoresence_rate, blank_egg_mean_time_life \
+	#		= zip(*reduce( operator.add, pool.map(sliced_sample, blank_eggs_filenames) ))
 	
 	print "vinculinTS life-time %.2e +/- %.2e (ns) " % ( np.mean(vinculinTS_mean_time_life), np.std(vinculinTS_mean_time_life) )
 	print "vinculinTS fluorescence rate %.2e +/- %.2e (counts per millisecond)" % ( np.mean(vinculinTS_mean_fluoresence_rate), np.std(vinculinTS_mean_fluoresence_rate) )
@@ -146,9 +146,10 @@ def plot_cumulative_sliced_samples () :
 	
 	plt.plot (vinculinTS_mean_fluoresence_rate, vinculinTS_mean_time_life, 'ro')
 	plt.plot (TL_mean_fluoresence_rate, 		TL_mean_time_life, 'gd')
-	plt.plot (blank_egg_mean_fluoresence_rate, 	blank_egg_mean_time_life, 'k*')
+	#plt.plot (blank_egg_mean_fluoresence_rate, 	blank_egg_mean_time_life, 'k*')
 		
-	plt.legend(['vinculinTS', 'TL', 'blank sample'])
+	#plt.legend(['vinculinTS', 'TL', 'blank sample'])
+	plt.legend(['vinculinTS', 'TL'])
 	
 	plt.title ('Choped samples and mearged')
 	

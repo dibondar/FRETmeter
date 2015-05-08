@@ -134,7 +134,7 @@ def get_scanning_polygon (ScanParameters) :
 		
 ####################################################################################################
 
-def control_pico_harp_ORIGINAL (input_pico_harp_queue, output_pico_harp_queue, histogram_buffer) :
+def control_pico_harp (input_pico_harp_queue, output_pico_harp_queue, histogram_buffer) :
 	"""
 	This function runs as a separate process and controls the Pico Harp 3000.
 	All communications are done through the input and output queues.
@@ -329,7 +329,8 @@ def control_pico_harp_ORIGINAL (input_pico_harp_queue, output_pico_harp_queue, h
 	# Closing Pico Harp
 	lib.PH_CloseDevice (DEV_INDX)
 		
-def control_pico_harp (input_pico_harp_queue, output_pico_harp_queue, histogram_buffer) :
+# The following function is a substitute 
+def control_pico_harp_SUBSTITUTE (input_pico_harp_queue, output_pico_harp_queue, histogram_buffer) :
 	"""
 	!!!!!NOTE: THIS FUNCTION USES HYDRA HARP!!!!!
 	
@@ -1832,8 +1833,8 @@ def joystick_control_moving_stage (use_joystick_event, write_serial_port_queue, 
 			if ax1*ax2 :
 				# The rudder control is used to scale the step size
 				scale = 0.05*(1. - Joystick.get_axis(2))
-				possition0 *= -scale
-				possition1 *= scale
+				possition0 *= scale
+				possition1 *= -scale
 
 				# The moving stage is ready to be moved
 				command = "1PR%e;2PR%e\r" % (possition0, possition1)
@@ -2704,8 +2705,8 @@ class CMicroscopeConrol (wx.Frame) :
 		self.add_point_button.SetBackgroundColour('red')
 		
 		# Update the values of number of scanning steps
-		# based on the 1.5micron resolution 
-		resolution = 1.5e-3
+		# based on the 2.5micron resolution 
+		resolution = 2.5e-3
 		
 		min_ax1 = min(self.points, key=operator.itemgetter(0))[0]; max_ax1 = max(self.points, key=operator.itemgetter(0))[0] 
 		min_ax2 = min(self.points, key=operator.itemgetter(1))[1]; max_ax2 = max(self.points, key=operator.itemgetter(1))[1]

@@ -111,12 +111,12 @@ def post_process_histogram (histogram, response_function, deg, get_fvec = False)
 		else : return nan_array
 
 	# Get the initial guess
-	exponent, ampl = expfit(gaussian_filter(histogram_cut, sigma=20), deg)
+	exponent, ampl = expfit(gaussian_filter(histogram_cut, sigma=0.02*histogram_cut.size), deg)
 
 	# Accounting for <initial_point> in the initial guess
 	ampl *= np.exp(-exponent*initial_point)
 	p0 = np.append(exponent, ampl)
-
+	
 	# Adjusting sizes of the histogram and response function
 	if response_function.size > histogram.size : response_function = response_function[:histogram.size]
 	else : histogram = histogram[:response_function.size]
@@ -127,7 +127,7 @@ def post_process_histogram (histogram, response_function, deg, get_fvec = False)
 	try :
 		# Perform accurate fit accounting for the response function
 		params, pcov = curve_fit(fitted_histogram, sfft_response_function, histogram, 
-								p0=np.append([0, 0*histogram.size],p0), maxfev=10000)
+								p0=np.append([0, 0],p0), maxfev=10000)
 
 		# Perform the chi-square test to characterize the goodness of fit and append the results to <fit_params> 
 		fitted_func = fitted_histogram(sfft_response_function, *params)
