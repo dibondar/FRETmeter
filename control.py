@@ -1311,6 +1311,8 @@ class ScanHistogramBoundary (BaseScanning) :
 		# Constant for measuring time it takes to complete scan	
 		initial_time = time.clock()
 		
+		# The commented out block is good for XY-cut scanning 
+		"""
 		# Iterating over Z-axis
 		for ax3 in Ax3 :
 			# Check whether scanning is requested to stop
@@ -1329,11 +1331,13 @@ class ScanHistogramBoundary (BaseScanning) :
 				self.points_visited = set()
 				
 				# First, scan in the forward direction
-				self.scan_fast_varying_axis(slow, fast_range, ax3)
+				position_iter = itertools.product( *self.ORDER3([slow], fast_range, [ax3]) )
+				self.scan_fast_varying_axis(position_iter, slow)
 				
 				# Then, scan in the backward direction (if the whole line has not yet been scanned)
 				if len(self.points_visited) < len(fast_range) :
-					self.scan_fast_varying_axis(slow, fast_range[::-1], ax3)
+					position_iter = itertools.product( *self.ORDER3([slow], fast_range[::-1], [ax3]) )
+					self.scan_fast_varying_axis(position_iter, slow)
 	
 				# Print progress info
 				completed += 1
@@ -1350,9 +1354,44 @@ class ScanHistogramBoundary (BaseScanning) :
 			except AttributeError : pass
 				
 		print "Number of bright points: %d" % self.bright_points
+		"""
 		
+		# Get number of XY points to be scanned
+		total_num_points = sum( 
+			polygon.contains(Point(point)) for point in 
+				itertools.product( *self.ORDER2(slow_varying_axis_range, fast_varying_axis_range) ) 
+		)
+
+		# Perform a bunch of Z-scans (this scanning minimizes backslash compare to commented out block)
+		for slow, fast in itertools.product(slow_varying_axis_range, fast_varying_axis_range) :
+			
+			# Check whether scanning is requested to stop
+			if not self.scaning_event.is_set() : break
+			
+			# Check whether the current XY point lies with the polygon
+			if not polygon.contains( Point(self.ORDER2(slow,fast)) ) : continue 
 		
-	def scan_fast_varying_axis (self, slow, fast_range, ax3) :
+			# The following line is for compatibility with the current implementation
+			# of the method scan_fast_varying_axis
+			self.points_visited = set()
+			
+			# Scan along Z-axis
+			position_iter = itertools.product( *self.ORDER3([slow], [fast], Ax3) )
+			self.scan_fast_varying_axis(position_iter)
+			
+			# Print progress info
+			completed += 1
+			percentage_completed = 100.*completed / total_num_points
+			seconds_left = (time.clock() - initial_time)*(100./percentage_completed - 1.)
+			# convert to hours:min:sec
+			m, s = divmod(seconds_left, 60)
+			h, m = divmod(m, 60)
+			print "%.2f %% completed. Time left: %d:%02d:%02d" % ( percentage_completed, h, m, s ) 
+		
+		print "Number of bright points: %d" % self.bright_points
+			
+			
+	def scan_fast_varying_axis (self, position_iter, slow=None) :
 		"""
 		Record histograms by moving along the fast varying axis
 		"""
@@ -1362,7 +1401,7 @@ class ScanHistogramBoundary (BaseScanning) :
 		continuous_scan = False
 
 		# Iterating over fast varying axis
-		for position in itertools.product( *self.ORDER3([slow], fast_range, [ax3]) ) :
+		for position in position_iter :
 			
 			# Check whether this point has already been scanned
 			if position in self.points_visited :
@@ -1399,6 +1438,12 @@ class ScanHistogramBoundary (BaseScanning) :
 		
 			# Decide whether to continue acquisition
 			if predicted_total_counts < self.histogram_counts_threshold : 
+				# Still save the histogram if it has half the counts  
+				if predicted_total_counts > 0.5*self.histogram_counts_threshold : 
+					self.histogram_buffer.acquire()
+					self.histograms_grp.create_dataset( "histogram_%d_%d_%d" % position, data=self.histogram, compression='szip')
+					self.histogram_buffer.release()
+				# however, this point is not a continues scan  
 				continuous_scan = False; continue
 			else :  # Total counts are higher than the threshold
 				if self.short_scanning_time >= self.Tacq :
@@ -1457,12 +1502,16 @@ class ScanHistogramBoundary (BaseScanning) :
 					# Check whether the boundary is sufficiently thick
 					# checking thickness of the fast varying axis
 					if ( ( boundary_beginning-np.array(position) )**2 ).sum() > self.radius_square :
-						try :	
-							# checking thickness of the slow varying axis
-							if (slow - self.slow_axis_init_value)**2 > self.radius_square : break
-						except AttributeError :
-							# A fist point is discovered
-							self.slow_axis_init_value = slow
+						if slow is None : 
+							# This is the case when z-axis is a fast scanning axis
+							break
+						else :
+							try :	
+								# checking thickness of the slow varying axis
+								if (slow - self.slow_axis_init_value)**2 > self.radius_square : break
+							except AttributeError :
+								# A fist point is discovered
+								self.slow_axis_init_value = slow
 				else :
 					# This is the beginning of continuous scanning, save the current point
 					boundary_beginning = np.array(position)
