@@ -1362,41 +1362,69 @@ class ScanHistogramBoundary (BaseScanning) :
 				itertools.product( *self.ORDER2(slow_varying_axis_range, fast_varying_axis_range) ) 
 		)
 
-		# Perform a bunch of Z-scans (this scanning minimizes backslash compare to commented out block)
-		for slow, fast in itertools.product(slow_varying_axis_range, fast_varying_axis_range) :
-			
+		"""
+		# Save a local copy 
+		go_up = True
+		"""
+		
+		# Perform a bunch of Z-scans (this scanning minimizes backslash compare to commented out block)	
+		for slow in slow_varying_axis_range :
+		
 			# Check whether scanning is requested to stop
 			if not self.scaning_event.is_set() : break
-			
-			# Check whether the current XY point lies with the polygon
-			if not polygon.contains( Point(self.ORDER2(slow,fast)) ) : continue 
 		
-			# The following line is for compatibility with the current implementation
-			# of the method scan_fast_varying_axis
-			self.points_visited = set()
+			# Inverse the direction of the motion (to avoid fast jumps)
+			fast_varying_axis_range = fast_varying_axis_range[::-1]
 			
-			# Scan along Z-axis
-			position_iter = itertools.product( *self.ORDER3([slow], [fast], Ax3) )
-			self.scan_fast_varying_axis(position_iter)
-			
-			# Print progress info
-			completed += 1
-			percentage_completed = 100.*completed / total_num_points
-			seconds_left = (time.clock() - initial_time)*(100./percentage_completed - 1.)
-			# convert to hours:min:sec
-			m, s = divmod(seconds_left, 60)
-			h, m = divmod(m, 60)
-			print "%.2f %% completed. Time left: %d:%02d:%02d" % ( percentage_completed, h, m, s ) 
+			for fast in fast_varying_axis_range :
 		
+				# Check whether scanning is requested to stop
+				if not self.scaning_event.is_set() : break
+			
+				# Check whether the current XY point lies with the polygon
+				if not polygon.contains( Point(self.ORDER2(slow,fast)) ) : continue 
+		
+				# The following line is for compatibility with the current implementation
+				# of the method scan_fast_varying_axis
+				self.points_visited = set()
+				
+				"""
+				# Scan along Z-axis
+				if go_up :
+					# Go from "bottom" to "top" along Z-axis
+					position_iter = itertools.product( *self.ORDER3([slow], [fast], Ax3) )
+					position = self.scan_fast_varying_axis(position_iter, close_shutter=True)
+					go_up = False
+				else :
+					# Go down from the place you last were all the way down
+					Ax3_segment = Ax3[ np.nonzero( Ax3 <= position[2] ) ][::-1]
+					position_iter = itertools.product( *self.ORDER3([slow], [fast], Ax3_segment) )
+					self.scan_fast_varying_axis(position_iter, close_shutter=False)
+					go_up = True
+				"""
+				
+				# Scan along Z-axis
+				position_iter = itertools.product( *self.ORDER3([slow], [fast], Ax3) )
+				self.scan_fast_varying_axis(position_iter)
+				
+				# Print progress info
+				completed += 1
+				percentage_completed = 100.*completed / total_num_points
+				seconds_left = (time.clock() - initial_time)*(100./percentage_completed - 1.)
+				# convert to hours:min:sec
+				m, s = divmod(seconds_left, 60)
+				h, m = divmod(m, 60)
+				print "%.2f %% completed. Time left: %d:%02d:%02d" % ( percentage_completed, h, m, s ) 
+				
+			
 		print "Number of bright points: %d" % self.bright_points
-			
-			
-	def scan_fast_varying_axis (self, position_iter, slow=None) :
+		
+		
+	def scan_fast_varying_axis (self, position_iter, slow=None, close_shutter = True) :
 		"""
 		Record histograms by moving along the fast varying axis
+		<close_shutter> indicates whether thus the shutter should be closed for new scan
 		"""
-		# New scan, thus the shutter should be closed
-		close_shutter = True
 		# New scan, thus the scanning is not continuous
 		continuous_scan = False
 
@@ -1516,6 +1544,11 @@ class ScanHistogramBoundary (BaseScanning) :
 					# This is the beginning of continuous scanning, save the current point
 					boundary_beginning = np.array(position)
 					continuous_scan = True
+		
+		
+		# Return current position
+		return position
+		
 		
 #####################################################################################################################
 
@@ -1862,31 +1895,49 @@ def joystick_control_moving_stage (use_joystick_event, write_serial_port_queue, 
 	Joystick.init ()
 	print 'Joystick "%s" was initialized' % Joystick.get_name() 
 
+	# Values of the joystick control so that motion is not detected
+	motion_cut_off = 0.1
+	
+	def IsAtRest(num) :
+		"""
+		Check whether the given axis of the moving stage is at rest
+		"""
+		write_serial_port_queue.put( (True, "%dMD?\r" % num) )
+		return  int(read_serial_port_queue.get())
+	
 	# Linking joystick to the moving stage
 	while use_joystick_event.is_set() :
 
 		# reading off the position of the joystick 
 		# Note that the labels are transposed to align the joystick with the moving stage
-		possition0 = Joystick.get_axis(0)
-		possition1 = -Joystick.get_axis(1)
-
-		if abs(possition0) > 1e-2 or abs(possition1) > 1e-2 :  
+		possition = np.array( [ Joystick.get_axis(n) for n in [0,1,3] ] )
+	
+		# Find which axis are below cut off
+		indx = ( np.abs(possition) < motion_cut_off )
+	
+		if indx.sum() < indx.size  :  
 			# User moved joystick
 			
 			# Check whether the moving stage does not move
-			write_serial_port_queue.put( (True, "1MD?\r") )
-			ax1 = int(read_serial_port_queue.get())
-			write_serial_port_queue.put( (True, "2MD?\r") )
-			ax2 = int(read_serial_port_queue.get())
+			if np.prod([ IsAtRest(axis) for axis in [1,2,3] ]) :
 			
-			if ax1*ax2 :
 				# The rudder control is used to scale the step size
 				scale = 0.05*(1. - Joystick.get_axis(2))
-				possition0 *= scale
-				possition1 *= -scale
-
+				possition *= scale
+				
+				# Do not change values of axis if it is bellow cut off
+				possition[indx] = 0
+		
+				# If joystick trigger button is on, then move z-axis only
+				if Joystick.get_button(0) :
+					possition[:2] = 0
+					possition[2] *= 0.1
+				else : 
+					# otherwise move x-y only
+					possition[2] = 0
+		
 				# The moving stage is ready to be moved
-				command = "1PR%e;2PR%e\r" % (possition0, possition1)
+				command = "1PR%e;2PR%e;3PR%e\r" % tuple(possition) 
 				write_serial_port_queue.put ( (False, command) ) 
 		
 		# Clearing the event stack
