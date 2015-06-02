@@ -1374,7 +1374,7 @@ class ScanHistogramBoundary (BaseScanning) :
 			if not self.scaning_event.is_set() : break
 		
 			# Inverse the direction of the motion (to avoid fast jumps)
-			fast_varying_axis_range = fast_varying_axis_range[::-1]
+			# fast_varying_axis_range = fast_varying_axis_range[::-1]
 			
 			for fast in fast_varying_axis_range :
 		

@@ -127,7 +127,7 @@ def post_process_histogram (histogram, response_function, deg, get_fvec = False)
 	try :
 		# Perform accurate fit accounting for the response function
 		params, pcov = curve_fit(fitted_histogram, sfft_response_function, histogram, 
-								p0=np.append([0, 0],p0), maxfev=10000)
+								p0=np.append([0, 0],p0), maxfev=5000)
 
 		# Perform the chi-square test to characterize the goodness of fit and append the results to <fit_params> 
 		fitted_func = fitted_histogram(sfft_response_function, *params)

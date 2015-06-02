@@ -39,17 +39,20 @@ cut_off = np.nonzero(sum_histogram)[0].max()
 sum_histogram = sum_histogram[:cut_off]
 
 #############################################################################
-# plot
-plt.plot( sum_histogram )
-plt.title ("Total histogram with resolution %d ps" % Resolution )
-plt.xlabel("time bins")
-plt.ylabel("counts")
-plt.show()
-
-#############################################################################
 # Normalize to max 1
 sum_histogram = sum_histogram.astype(np.float) 
 sum_histogram /= sum_histogram.max()
+
+# Delete the background
+sum_histogram[ np.nonzero(sum_histogram < 0.03) ] = 0
+
+#############################################################################
+# plot
+plt.plot( 1e-3*Resolution*np.arange(sum_histogram.size), sum_histogram )
+plt.title ("Total histogram with resolution %d ps" % Resolution )
+plt.xlabel("time (ns)")
+plt.ylabel("counts")
+plt.show()
 
 # Save
 sum_histogram.tofile("response_function_%dps.dat" % Resolution)
