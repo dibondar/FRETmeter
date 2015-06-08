@@ -13,9 +13,9 @@ get_fluoresence_rate 	= operator.itemgetter("fluoresence_rate")
 get_fitted_data			= operator.itemgetter("fitted_data")
 	
 # Files containing information about working sensor 
-vinculinTS_filenames = glob.glob("..\\Data_Final_Plots\\confocal_microscope\\vinculinTS\\vinculinTS_*_boundary.flim")
+vinculinTS_filenames = glob.glob("..\\Data_Final_Plots\\confocal_microscope\\vinculinTS\\vinculinTS_*.flim")
 # Files for tailless control
-TL_filenames = glob.glob("..\\Data_Final_Plots\\confocal_microscope\\TL\\TL_*_boundary.flim")
+TL_filenames = glob.glob("..\\Data_Final_Plots\\confocal_microscope\\TL\\TL_*.flim")
 # Samples with no constructions
 #blank_eggs_filenames = glob.glob("Data_Final_Plots\\blank\\blank_*_direct_sum_boundary.flim")
 
@@ -69,7 +69,7 @@ def plot_cumulative_stat () :
 
 	plt.show()
 		
-def sliced_sample (filename, nchunks = 7) :
+def sliced_sample (filename, nchunks = 500) :
 	"""
 	Slice a sample saved in file <filename> into <nchunks> chunks. 
 	"""
